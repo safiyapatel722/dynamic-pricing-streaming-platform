@@ -1,5 +1,6 @@
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
+event_time=datetime.now(timezone.utc)
 import uuid
 
 
@@ -16,5 +17,5 @@ class Event:
             event_id=str(uuid.uuid4()),
             event_type=event_type,
             location=location,
-            event_time=datetime.utcnow()
+            event_time=datetime.now(timezone.utc)
         )
