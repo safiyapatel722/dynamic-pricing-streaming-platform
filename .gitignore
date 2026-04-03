@@ -1,1 +1,4 @@
 mvenv/
+.env
+.price-surge-streaming-project-sa
+.test-connection

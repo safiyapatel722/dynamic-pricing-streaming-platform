@@ -1,10 +1,10 @@
-from config.settings import CONFIG
+from config.settings import settings
 
 
 class SurgeCalculator:
 
     def __init__(self):
-        self.surge_cap = CONFIG["surge_cap"]
+        self.surge_cap = settings.surge_cap
 
     def calculate(self, riders: int, drivers: int) -> float:
         """

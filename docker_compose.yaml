@@ -1,0 +1,46 @@
+version: "3.8"
+
+services:
+
+  simulator:
+    build: .
+    command: python -m ingestion.simulator
+    env_file: .env
+    volumes:
+      # mounts GCP service account key for local auth
+      - ${GOOGLE_APPLICATION_CREDENTIALS}:/app/credentials.json
+    environment:
+      GOOGLE_APPLICATION_CREDENTIALS: /app/credentials.json
+    restart: unless-stopped
+
+  consumer:
+    build: .
+    command: python -m processing.consumer
+    env_file: .env
+    volumes:
+      - ${GOOGLE_APPLICATION_CREDENTIALS}:/app/credentials.json
+    environment:
+      GOOGLE_APPLICATION_CREDENTIALS: /app/credentials.json
+    restart: unless-stopped
+
+  archiver:
+    build: .
+    command: python -m storage.archiver
+    env_file: .env
+    volumes:
+      - ${GOOGLE_APPLICATION_CREDENTIALS}:/app/credentials.json
+    environment:
+      GOOGLE_APPLICATION_CREDENTIALS: /app/credentials.json
+    restart: unless-stopped
+
+  api:
+    build: .
+    command: python -m serving.api
+    env_file: .env
+    ports:
+      - "8080:8080"
+    volumes:
+      - ${GOOGLE_APPLICATION_CREDENTIALS}:/app/credentials.json
+    environment:
+      GOOGLE_APPLICATION_CREDENTIALS: /app/credentials.json
+    restart: unless-stopped
