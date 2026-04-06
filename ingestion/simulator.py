@@ -1,22 +1,23 @@
 """
 ingestion/simulator.py
 
-Generates synthetic ride events (rider requests + driver availability)
-with peak-hour weighting and publishes them to GCP Pub/Sub.
+Generates synthetic ride events with peak-hour weighting
+and publishes them to GCP Pub/Sub.
 """
 
 import random
-import json
 import time
 from datetime import datetime, timezone
-from google.cloud import pubsub_v1
 from models.event import Event
 from config.settings import settings
+from utils.serializer import serialize
+from utils.pubsub_helper import get_publisher
+from utils.logger import get_logger
 
+logger = get_logger(__name__)
 
 # created once at module level — expensive to recreate per event
-publisher = pubsub_v1.PublisherClient()
-topic_path = publisher.topic_path(settings.gcp_project_id, settings.pubsub_topic)
+publisher, topic_path = get_publisher()
 
 
 def is_peak_hour(current_time) -> bool:
@@ -52,26 +53,19 @@ def generate_event() -> Event:
 
 
 def publish_event(event: Event) -> None:
-    """
-    Serialize event to JSON bytes and publish to GCP Pub/Sub topic.
-    Fire and forget — Pub/Sub handles delivery guarantees.
-    """
-    message_bytes = json.dumps(event.to_dict()).encode("utf-8")
-    publisher.publish(topic_path, data=message_bytes)
+    """Serialize event to bytes and publish to GCP Pub/Sub."""
+    publisher.publish(topic_path, data=serialize(event))
+    logger.info(f"Published: {event.event_type} @ {event.location} [{event.event_id}]")
 
 
 def run_simulation() -> None:
-    """
-    Continuously generate and publish events.
-    Sleep interval controls throughput — lower = more events per second.
-    """
-    print(f"Starting simulation → topic: {topic_path}")
+    """Continuously generate and publish events."""
+    logger.info(f"Starting simulation → topic: {topic_path}")
 
     while True:
         event = generate_event()
         publish_event(event)
-        print(f"Published: {event.event_type} @ {event.location} [{event.event_id}]")
-        time.sleep(0.5)  # 2 events/sec — enough to fill 60s window meaningfully
+        time.sleep(settings.event_interval_sec)
 
 
 if __name__ == "__main__":

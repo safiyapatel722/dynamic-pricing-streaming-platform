@@ -2,22 +2,23 @@
 processing/consumer.py
 
 Pulls messages from GCP Pub/Sub, reconstructs Event objects,
-updates windowed state, and calculates real-time surge pricing.
+updates windowed state, calculates surge and writes to Redis.
 """
 
-from google.cloud import pubsub_v1
-import json
-from datetime import datetime, timezone
+from datetime import datetime
 from config.settings import settings
 from models.event import Event
 from processing.state_manager import StateManager
 from processing.surge_calculator import SurgeCalculator
+from utils.serializer import deserialize
+from utils.pubsub_helper import get_subscriber
+from utils.redis_client import set_surge
+from utils.logger import get_logger
 
+logger = get_logger(__name__)
 
 # module level — created once, reused for every message
-subscriber = pubsub_v1.SubscriberClient()
-subscription_path = subscriber.subscription_path(
-    settings.gcp_project_id,
+subscriber, subscription_path = get_subscriber(
     settings.pubsub_subscription_consumer
 )
 state_manager = StateManager()
@@ -27,15 +28,13 @@ surge_calculator = SurgeCalculator()
 def process_message(message) -> None:
     """
     Callback triggered by Pub/Sub for every incoming message.
-    Decodes bytes → Event → state update → surge calculation.
+    Decodes bytes → Event → state update → surge → Redis write.
     """
     try:
-        # step 1: bytes → dict
-        data = json.loads(message.data.decode("utf-8"))
+        # bytes → dict
+        data = deserialize(message.data)
 
-        # step 2: reconstruct Event with original event_id and event_time
-        # fromisoformat() reverses .isoformat() from Event.to_dict()
-        # event_id must match original — critical for idempotency checks
+        # reconstruct Event with original event_id — critical for idempotency
         event = Event(
             event_type=data["event_type"],
             location=data["location"],
@@ -43,28 +42,28 @@ def process_message(message) -> None:
             event_id=data["event_id"]
         )
 
-        # step 3: update windowed state
-        # idempotency check lives inside state_manager — duplicates safely ignored
+        # update windowed state — duplicates safely ignored inside
         state_manager.process_event(event)
 
-        # step 4: calculate surge and log result
+        # calculate surge and write to Redis
         counts = state_manager.get_counts(event.location)
         surge = surge_calculator.calculate(counts["riders"], counts["drivers"])
 
-        print(
+        set_surge(event.location, surge, counts["riders"], counts["drivers"])
+
+        logger.info(
             f"{event.location} → "
             f"riders: {counts['riders']} "
             f"drivers: {counts['drivers']} → "
             f"surge: {surge}x"
         )
 
-        # step 5: acknowledge — without this Pub/Sub redelivers indefinitely
+        # acknowledge — without this Pub/Sub redelivers indefinitely
         message.ack()
 
     except Exception as e:
         # don't ack on failure — Pub/Sub will redeliver
-        # idempotency in StateManager handles the duplicate safely
-        print(f"Failed to process message: {e}")
+        logger.error(f"Failed to process message: {e}")
 
 
 def run_consumer() -> None:
@@ -72,7 +71,7 @@ def run_consumer() -> None:
     Start streaming pull from Pub/Sub.
     subscriber.subscribe() is non-blocking — result() keeps main thread alive.
     """
-    print(f"Consumer listening on: {subscription_path}")
+    logger.info(f"Consumer listening on: {subscription_path}")
 
     streaming_pull_future = subscriber.subscribe(
         subscription_path,
@@ -80,11 +79,10 @@ def run_consumer() -> None:
     )
 
     try:
-        # blocks main thread — consumer runs until interrupted
         streaming_pull_future.result()
     except KeyboardInterrupt:
         streaming_pull_future.cancel()
-        print("Consumer stopped.")
+        logger.info("Consumer stopped.")
 
 
 if __name__ == "__main__":

@@ -1,0 +1,21 @@
+name: CI
+
+on: [push]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install -r requirements.txt
+      - run: pytest tests/ -v
+        env:
+          GCP_PROJECT_ID: test-project
+          PUBSUB_TOPIC: test-topic
+          PUBSUB_SUBSCRIPTION_CONSUMER: test-consumer-sub
+          PUBSUB_SUBSCRIPTION_ARCHIVER: test-archiver-sub
+          GCS_BUCKET: test-bucket

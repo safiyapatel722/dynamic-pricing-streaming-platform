@@ -10,12 +10,12 @@ from datetime import time
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env")
 
-    # secrets — never commit these, must be set in .env or GCP Cloud Run
+    # secrets — never commit these
     gcp_project_id: str
     pubsub_topic: str
+    pubsub_subscription_consumer: str
+    pubsub_subscription_archiver: str
     gcs_bucket: str
-    pubsub_subscription_consumer: str  # for consumer.py
-    pubsub_subscription_archiver: str  # for archiver.py
 
     # config — safe to commit, overridable per environment
     window_size_sec: int = 60
@@ -28,11 +28,24 @@ class Settings(BaseSettings):
         "Viman_Nagar",
         "Wakad"
     ]
+
     # event generation weights
-    rider_peak_weight: int = 4      # during peak: heavily rider-biased
+    rider_peak_weight: int = 4
     driver_peak_weight: int = 1
-    rider_offpeak_weight: int = 1   # off-peak: slightly driver-biased  
+    rider_offpeak_weight: int = 1
     driver_offpeak_weight: int = 2
+
+    # redis — localhost for dev, GCP Memorystore for prod
+    redis_host: str = "localhost"
+    redis_port: int = 6379
+
+    # archiver
+    archiver_batch_size: int = 300
+    archiver_flush_interval: int = 10
+    archiver_max_retries: int = 3
+
+    # simulator
+    event_interval_sec: float = 0.5
 
     # stable business rules — not environment-driven
     peak_hours: list[tuple] = [

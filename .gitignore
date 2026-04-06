@@ -1,3 +1,8 @@
 mvenv/
 .env
 .test-connection
+.docker-compose
+price-surge-streaming-project-sa.json
+__pycache__/
+*.pyc
+.pytest_cache/

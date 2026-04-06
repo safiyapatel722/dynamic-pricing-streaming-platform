@@ -2,34 +2,26 @@
 serving/api.py
 
 FastAPI serving layer — exposes real-time surge pricing via REST API.
-Reads current windowed state from StateManager and returns surge multiplier.
+Reads surge data from Redis — shared with consumer, always current.
 """
 
 from fastapi import FastAPI, HTTPException
-from processing.state_manager import StateManager
-from processing.surge_calculator import SurgeCalculator
 from config.settings import settings
+from utils.redis_client import get_surge
+from utils.logger import get_logger
 
+logger = get_logger(__name__)
 
 app = FastAPI(title="Dynamic Pricing API")
 
-# shared instances — same state_manager used by consumer and API
-state_manager = StateManager()
-surge_calculator = SurgeCalculator()
-
 
 @app.get("/surge")
-def get_surge(location: str) -> dict:
+def get_surge_endpoint(location: str) -> dict:
     """
     Returns current surge multiplier for a given location.
+    Reads from Redis — written by consumer after every event processed.
 
     Example: GET /surge?location=Baner
-    Response: {
-        "location": "Baner",
-        "surge_multiplier": 2.3,
-        "riders": 45,
-        "drivers": 18
-    }
     """
     if location not in settings.locations:
         raise HTTPException(
@@ -38,20 +30,27 @@ def get_surge(location: str) -> dict:
                    f"Valid locations: {settings.locations}"
         )
 
-    counts = state_manager.get_counts(location)
-    surge = surge_calculator.calculate(counts["riders"], counts["drivers"])
+    data = get_surge(location)
+
+    # no data yet — consumer hasn't processed any events for this location
+    if data is None:
+        return {
+            "location": location,
+            "surge_multiplier": 1.0,
+            "riders": 0,
+            "drivers": 0,
+            "note": "no events received yet"
+        }
 
     return {
         "location": location,
-        "surge_multiplier": surge,
-        "riders": counts["riders"],
-        "drivers": counts["drivers"]
+        **data
     }
 
 
 @app.get("/health")
 def health_check() -> dict:
-    """Health check endpoint — used by GCP Cloud Run to verify service is alive."""
+    """Health check — used by GCP Cloud Run to verify service is alive."""
     return {"status": "ok"}
 
 

@@ -2,55 +2,39 @@
 storage/archiver.py
 
 Subscribes to GCP Pub/Sub and archives raw events to GCS as Parquet.
-Includes:
-- batching
-- time-based flushing
-- retry with exponential backoff
-- rate-limit handling (429 safe)
+Batches events and flushes on size or time threshold.
 """
 
-import json
 import io
 import time
 from datetime import datetime, timezone
-from google.cloud import pubsub_v1, storage
+from google.cloud import storage
 import pyarrow as pa
 import pyarrow.parquet as pq
 from config.settings import settings
+from utils.serializer import deserialize
+from utils.pubsub_helper import get_subscriber
+from utils.logger import get_logger
 
+logger = get_logger(__name__)
 
-# -----------------------------
-# CLIENTS (created once)
-# -----------------------------
-subscriber = pubsub_v1.SubscriberClient()
+# clients — created once
 storage_client = storage.Client()
-
-subscription_path = subscriber.subscription_path(
-    settings.gcp_project_id,
-    settings.pubsub_archiver_subscription
+subscriber, subscription_path = get_subscriber(
+    settings.pubsub_subscription_archiver
 )
 
+settings.archiver_batch_size
+settings.archiver_flush_interval
 
-# -----------------------------
-# BUFFER CONFIG
-# -----------------------------
-BATCH_SIZE = 300           # increased to reduce API calls
-FLUSH_INTERVAL = 10        # seconds
 
 event_buffer = []
 LAST_FLUSH_TIME = time.time()
 
 
-# -----------------------------
-# CORE LOGIC
-# -----------------------------
 def _flush_to_gcs(events: list) -> None:
-    """
-    Writes events to GCS as Parquet with retry + exponential backoff.
-    """
-    retries = 3
-
-    for attempt in range(retries):
+    """Write buffered events to GCS as Parquet with retry + backoff."""
+    for attempt in range(settings.archiver_max_retries):
         try:
             table = pa.table({
                 "event_id":   [e["event_id"] for e in events],
@@ -63,9 +47,6 @@ def _flush_to_gcs(events: list) -> None:
             pq.write_table(table, buffer)
             buffer.seek(0)
 
-            bucket = storage_client.bucket(settings.gcs_bucket)
-
-            # unique file name to avoid overwrite
             now = datetime.now(timezone.utc)
             blob_path = (
                 f"events/{now.strftime('%Y-%m-%d')}/"
@@ -73,38 +54,33 @@ def _flush_to_gcs(events: list) -> None:
                 f"batch_{now.strftime('%Y%m%d_%H%M%S')}.parquet"
             )
 
+            bucket = storage_client.bucket(settings.gcs_bucket)
             blob = bucket.blob(blob_path)
             blob.upload_from_file(buffer, content_type="application/octet-stream")
 
-            print(f"Flushed {len(events)} events → gs://{settings.gcs_bucket}/{blob_path}")
+            logger.info(f"Flushed {len(events)} events → gs://{settings.gcs_bucket}/{blob_path}")
             return
 
         except Exception as e:
-            print(f"[Retry {attempt+1}] Failed to upload: {e}")
-
-            # exponential backoff
+            logger.warning(f"Retry {attempt + 1} — upload failed: {e}")
             time.sleep(2 ** attempt)
 
-    print("❌ Final failure after retries — events dropped")
+    logger.error("Final failure after retries — events dropped")
 
 
 def archive_message(message) -> None:
-    """
-    Pub/Sub callback — buffers events and flushes to GCS.
-    Handles both batch-size and time-based flushing.
-    """
+    """Pub/Sub callback — buffers events and flushes to GCS."""
     global LAST_FLUSH_TIME
 
     try:
-        data = json.loads(message.data.decode("utf-8"))
+        data = deserialize(message.data)
         event_buffer.append(data)
 
         current_time = time.time()
 
-        # flush conditions:
         if (
-            len(event_buffer) >= BATCH_SIZE
-            or (current_time - LAST_FLUSH_TIME) >= FLUSH_INTERVAL
+            len(event_buffer) >= settings.archiver_batch_size
+            or (current_time - LAST_FLUSH_TIME) >= settings.archiver_flush_interval
         ):
             _flush_to_gcs(event_buffer.copy())
             event_buffer.clear()
@@ -113,16 +89,12 @@ def archive_message(message) -> None:
         message.ack()
 
     except Exception as e:
-        print(f"Failed to archive message: {e}")
-        # do not ack → Pub/Sub will retry
+        logger.error(f"Failed to archive message: {e}")
 
 
 def run_archiver() -> None:
-    """
-    Start streaming pull for archiving.
-    Ensures buffer flush on shutdown.
-    """
-    print(f"Archiver listening on: {subscription_path}")
+    """Start streaming pull for archiving."""
+    logger.info(f"Archiver listening on: {subscription_path}")
 
     streaming_pull_future = subscriber.subscribe(
         subscription_path,
@@ -131,15 +103,11 @@ def run_archiver() -> None:
 
     try:
         streaming_pull_future.result()
-
     except KeyboardInterrupt:
-        print("Stopping archiver... flushing remaining events")
-
         if event_buffer:
             _flush_to_gcs(event_buffer)
-
         streaming_pull_future.cancel()
-        print("Archiver stopped.")
+        logger.info("Archiver stopped.")
 
 
 if __name__ == "__main__":
