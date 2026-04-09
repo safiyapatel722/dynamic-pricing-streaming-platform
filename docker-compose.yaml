@@ -1,5 +1,3 @@
-version: "3.8"
-
 services:
 
   redis:
@@ -17,8 +15,6 @@ services:
     environment:
       GOOGLE_APPLICATION_CREDENTIALS: /app/credentials.json
     restart: unless-stopped
-    depends_on:
-      - redis
 
   consumer:
     build: .
@@ -41,15 +37,25 @@ services:
     environment:
       GOOGLE_APPLICATION_CREDENTIALS: /app/credentials.json
     restart: unless-stopped
-    depends_on:
-      - redis
 
   api:
     build: .
     command: python -m serving.api
     env_file: .env
     ports:
-      - "8080:8080"
+      - "8081:8080"
+    volumes:
+      - ${GOOGLE_APPLICATION_CREDENTIALS}:/app/credentials.json
+    environment:
+      GOOGLE_APPLICATION_CREDENTIALS: /app/credentials.json
+    restart: unless-stopped
+    depends_on:
+      - redis
+
+  bigquery-loader:
+    build: .
+    command: python -m bigquery.loader
+    env_file: .env
     volumes:
       - ${GOOGLE_APPLICATION_CREDENTIALS}:/app/credentials.json
     environment:
